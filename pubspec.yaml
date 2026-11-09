@@ -1,15 +1,15 @@
 name: app_resource_monitor
-description: A starting point for Dart libraries or applications.
-version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+description: A lightweight Dart package to monitor your app's own **CPU**, **GPU**, and **RAM** usage.
+version: 0.1.0
+repository: https://github.com/jpangestu/app_resource_monitor
 
 environment:
-  sdk: ^3.2.0
+  sdk: ^3.3.0
 
 platforms:
   windows:
 
-dependencies:
+# dependencies:
 
 dev_dependencies:
   lints: ^6.0.0

@@ -25,10 +25,12 @@ import 'dart:ffi';
 // - UserTime: Time the process spent executing application code in user-mode (100-nanosecond units).
 //
 // NOTE on CPU calculation:
-// CPU usage is a rate of change over time:
-//   DeltaProcessCpuTime = (KernelTime2 + UserTime2) - (KernelTime1 + UserTime1)
-//   ElapsedRealTime     = Time2 - Time1
-//   CPU %               = (DeltaProcessCpuTime / (ElapsedRealTime * LogicalCores)) * 100.0
+// GetProcessTimes returns cumulative execution time since process startup (like an odometer).
+// CPU utilization is the fraction of total processor capacity consumed over an observation window:
+//   DeltaCpuTime   = (KernelTime2 + UserTime2) - (KernelTime1 + UserTime1)
+//   DeltaWallTime  = Time2 - Time1   // Wall time = Elapsed real world time
+//   CPU %          = (DeltaCpuTime / (DeltaWallTime * LogicalCores)) * 100.0
+// Dividing by LogicalCores normalizes the metric to 0.0%–100.0%, matching Windows Task Manager.
 
 // HANDLE GetCurrentProcess(void);
 typedef GetCurrentProcessNative = IntPtr Function();
@@ -201,7 +203,7 @@ final class MEMORYSTATUSEX extends Struct {
 // GPU
 // ================================================================================================
 
-// To get GPU usage info in windows, we use PDH (Performance Data Helper) from pdh.dll:
+// To get GPU usage info in windows, we need these from pdh.dll:
 // 1. PdhOpenQueryW
 //    https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhopenqueryw
 //    PDH_STATUS PdhOpenQueryW(

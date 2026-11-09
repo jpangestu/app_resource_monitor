@@ -2,8 +2,7 @@ import 'dart:ffi';
 import 'dart:io' show Platform, ProcessInfo, pid;
 import 'dart:math' as math;
 
-import 'package:app_resource_monitor/src/app_resource_monitor.dart';
-
+import '../app_resource_monitor_platform_interface.dart';
 import 'win_binding.dart';
 
 // Internal Kernel32 Helpers (Memory Allocation)
@@ -51,7 +50,8 @@ final class _PdhScratch extends Struct {
 }
 
 /// Windows implementation of [AppResourceMonitor] using Kernel32 and PDH via `dart:ffi`.
-final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
+final class WinResourceMonitor extends AppResourceMonitorPlatform
+    implements Finalizable {
   WinResourceMonitor() {
     _init();
   }
@@ -91,6 +91,9 @@ final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
 
   Pointer<_PdhScratch>? _gpuScratchPtr;
   final Object _gpuScratchToken = Object();
+
+  NativeFinalizer? _pdhQueryFinalizer;
+  final Object _pdhQueryToken = Object();
 
   Pointer<PDH_FMT_COUNTERVALUE_ITEM_W>? _gpuItemBuffer;
   Object _gpuItemBufferToken = Object();
@@ -162,6 +165,9 @@ final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
 
       _initialized = true;
 
+      // Prime memory counters and CPU baseline
+      _updateMemoryCounters();
+
       if (!_resetCpu()) {
         dispose();
       }
@@ -178,6 +184,10 @@ final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
 
     try {
       final pdh = DynamicLibrary.open('pdh.dll');
+      final pdhCloseQueryPtr =
+          pdh.lookup<NativeFinalizerFunction>('PdhCloseQuery');
+      _pdhQueryFinalizer = NativeFinalizer(pdhCloseQueryPtr);
+
       final pdhOpenQuery =
           pdh.lookupFunction<PdhOpenQueryWNative, PdhOpenQueryWDart>(
         'PdhOpenQueryW',
@@ -214,10 +224,18 @@ final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
       final hQueryPtr = scratch.cast<IntPtr>();
       final hCounterPtr = scratch.cast<IntPtr>() + 1;
 
-      if (pdhOpenQuery(nullptr, 0, hQueryPtr) != 0) {
+      if (pdhOpenQuery(nullptr, 0, hQueryPtr) != 0 || scratch.ref.hQuery == 0) {
         _disposeGpu();
         return;
       }
+
+      // Attach NativeFinalizer to the PDH query handle so Windows OS closes the session
+      // automatically even if dispose() is never called.
+      _pdhQueryFinalizer?.attach(
+        this,
+        Pointer.fromAddress(scratch.ref.hQuery),
+        detach: _pdhQueryToken,
+      );
 
       // WDDM counter path for the current process across all GPU engines (3D, Copy, Compute, etc.)
       final counterPath = '\\GPU Engine(pid_${pid}_*)\\Utilization Percentage';
@@ -299,7 +317,7 @@ final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
   bool _updateMemoryCounters() {
     if (!_initialized || _buffer == null) return false;
     final now = _stopwatch.elapsedMicroseconds;
-    if (now - _lastMemorySampleTimeUs < 10000) {
+    if (_lastMemorySampleTimeUs > 0 && now - _lastMemorySampleTimeUs < 10000) {
       return true;
     }
     final memPtr = _memCountersPtr;
@@ -512,6 +530,7 @@ final class WinResourceMonitor implements AppResourceMonitor, Finalizable {
     if (scratch != null && scratch.address != 0) {
       final hQuery = scratch.ref.hQuery;
       if (hQuery != 0) {
+        _pdhQueryFinalizer?.detach(_pdhQueryToken);
         _pdhCloseQuery?.call(hQuery);
         scratch.ref.hQuery = 0;
       }

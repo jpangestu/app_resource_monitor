@@ -1,77 +1,50 @@
 import 'dart:async';
-import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:app_resource_monitor/app_resource_monitor.dart';
 
-Future<void> main() async {
-  // 1. Create the resource monitor instance
+void main() async {
+  // 1. AppResourceMonitor.instance (Shared Singleton)
+  // Use this for 90% of use cases (app-wide performance overlays, single loggers).
+  final instance = AppResourceMonitor.instance;
+
+  print('=== 1. App Resource Snapshot (AppResourceMonitor.instance) ===');
+  print('Total System RAM : ${instance.totalSystemRam.format()}');
+  print(
+    'Private RAM      : ${instance.private.format()} '
+    '(${instance.memoryUsagePercent.toStringAsFixed(1)}% of system RAM)',
+  );
+  print('Working Set (RSS): ${instance.rss.format()}');
+  print('Committed Memory : ${instance.committed.format()}');
+  print('CPU Usage        : ${instance.cpuUsagePercent.toStringAsFixed(1)}%');
+  print('GPU Usage        : ${instance.gpuUsagePercent.toStringAsFixed(1)}%\n');
+
+  // 2. AppResourceMonitor() (Dedicated Instance)
+  // Use this when you need:
+  // - An independent sampling window (avoids baseline collisions between multiple pollers)
+  // - Isolated benchmarking for a specific function or task
+  // - Code running in a background Dart Isolate
+  // - Explicit lifecycle control with dispose()
+  print('=== 2. Dedicated Monitor Streaming (AppResourceMonitor()) ===');
   final monitor = AppResourceMonitor();
 
-  print('=== Current Process & System Resources ===');
-  print('Total System RAM : ${monitor.totalSystemRamMb.toStringAsFixed(0)} MB');
-  print(
-    'Private RAM      : ${monitor.privateMb.toStringAsFixed(1)} MB '
-    '(${monitor.memoryUsagePercent.toStringAsFixed(1)}% of system RAM)',
-  );
-  print('RSS (Working Set): ${monitor.rssMb.toStringAsFixed(1)} MB');
-  print('Committed Virtual: ${monitor.committedMb.toStringAsFixed(1)} MB');
-  print('CPU Usage        : ${monitor.cpuUsagePercent.toStringAsFixed(1)}%');
-  print('GPU Usage        : ${monitor.gpuUsagePercent.toStringAsFixed(1)}%\n');
-
-  // 2. Stream metrics periodically (e.g. for a UI overlay, telemetry, or HUD)
-  print('=== Streaming Resource Usage (every 500ms) ===');
-  final stream = Stream.periodic(
-    const Duration(milliseconds: 500),
-    (_) => (
-      cpu: monitor.cpuUsagePercent,
-      gpu: monitor.gpuUsagePercent,
-      ramMb: monitor.privateMb,
-      ramPct: monitor.memoryUsagePercent,
-    ),
-  );
-
-  final subscription = stream.listen((metrics) {
+  var sampleCount = 0;
+  Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    sampleCount++;
     print(
-      'CPU: ${metrics.cpu.toStringAsFixed(1).padLeft(5)}% | '
-      'GPU: ${metrics.gpu.toStringAsFixed(1).padLeft(5)}% | '
-      'Private RAM: ${metrics.ramMb.toStringAsFixed(1).padLeft(6)} MB '
-      '(${metrics.ramPct.toStringAsFixed(1)}%)',
+      '#$sampleCount | '
+      'CPU: ${monitor.cpuUsagePercent.toStringAsFixed(1).padLeft(5)}% | '
+      'GPU: ${monitor.gpuUsagePercent.toStringAsFixed(1).padLeft(5)}% | '
+      'RAM: ${monitor.private.format().padLeft(8)} '
+      '(${monitor.memoryUsagePercent.toStringAsFixed(1)}%)',
     );
-  });
 
-  // 3. Simulate a brief workload (allocating heap memory and running CPU calculations)
-  print('\n>>> Simulating active workload for 3 seconds...');
-  final allocatedBuffers = <Uint8List>[];
-  final workloadTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-    // Allocate 2 MB of heap memory per tick and touch pages so they enter Private Working Set
-    final buffer = Uint8List(2 * 1024 * 1024);
-    for (int i = 0; i < buffer.length; i += 4096) {
-      buffer[i] = i & 0xFF;
+    // Stop after 6 samples (3 seconds) for this example
+    if (sampleCount >= 6) {
+      timer.cancel();
+      // (Optional) Release resources immediately
+      // If not set explicitly, Dart Garbage Collector will dispose it for you later on
+      monitor.dispose();
+      print('\nDedicated monitor disposed.');
     }
-    allocatedBuffers.add(buffer);
-
-    // Burn ~25ms of CPU time
-    final sw = Stopwatch()..start();
-    double sink = 0;
-    while (sw.elapsedMilliseconds < 25) {
-      sink += math.sqrt(sw.elapsedMicroseconds.toDouble());
-    }
-    if (sink < 0) print(sink);
   });
-
-  await Future<void>.delayed(const Duration(seconds: 3));
-
-  // 4. Stop workload, clear memory buffers, and reset baseline
-  workloadTimer.cancel();
-  allocatedBuffers.clear();
-  monitor.resetBaseline();
-  print('>>> Workload stopped & baseline reset.\n');
-
-  await Future<void>.delayed(const Duration(seconds: 2));
-
-  // 5. Clean up stream subscription and free native FFI handles
-  await subscription.cancel();
-  monitor.dispose();
-  print('Monitor disposed.');
 }

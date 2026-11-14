@@ -34,13 +34,19 @@ final class _CpuMemoryBuffer extends Struct {
   external PROCESS_MEMORY_COUNTERS_EX2 memCounters;
 }
 
-/// Scratch memory layout for PDH handles and array size/count outputs (24 bytes).
+/// Scratch memory layout for PDH handles and array size/count outputs (40 bytes).
 final class _PdhScratch extends Struct {
   @IntPtr()
   external int hQuery;
 
   @IntPtr()
-  external int hCounter;
+  external int hCounterUsage;
+
+  @IntPtr()
+  external int hCounterDedicated;
+
+  @IntPtr()
+  external int hCounterShared;
 
   @Uint32()
   external int dwBufferSize;
@@ -88,6 +94,8 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
   bool _gpuInitialized = false;
   int _lastGpuSampleTimeUs = 0;
   double _lastGpuUsage = 0.0;
+  int _lastGpuDedicatedBytes = 0;
+  int _lastGpuSharedBytes = 0;
 
   Pointer<_PdhScratch>? _gpuScratchPtr;
   final Object _gpuScratchToken = Object();
@@ -124,13 +132,10 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
           GlobalMemoryStatusExDart>('GlobalMemoryStatusEx');
       final localAlloc = kernel32
           .lookupFunction<_LocalAllocNative, _LocalAllocDart>('LocalAlloc');
-      final localFreePtr = kernel32.lookup<NativeFinalizerFunction>(
-        'LocalFree',
-      );
-      final localFree =
-          kernel32.lookupFunction<_LocalFreeNative, _LocalFreeDart>(
-        'LocalFree',
-      );
+      final localFreePtr =
+          kernel32.lookup<NativeFinalizerFunction>('LocalFree');
+      final localFree = kernel32
+          .lookupFunction<_LocalFreeNative, _LocalFreeDart>('LocalFree');
 
       _localAlloc = localAlloc;
       _localFree = localFree;
@@ -222,8 +227,6 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
       );
 
       final hQueryPtr = scratch.cast<IntPtr>();
-      final hCounterPtr = scratch.cast<IntPtr>() + 1;
-
       if (pdhOpenQuery(nullptr, 0, hQueryPtr) != 0 || scratch.ref.hQuery == 0) {
         _disposeGpu();
         return;
@@ -237,31 +240,50 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
         detach: _pdhQueryToken,
       );
 
-      // WDDM counter path for the current process across all GPU engines (3D, Copy, Compute, etc.)
-      final counterPath = '\\GPU Engine(pid_${pid}_*)\\Utilization Percentage';
-      final pathUnits = counterPath.codeUnits;
-      final pathPtr = localAlloc(
-        _lmemZeroInit,
-        (pathUnits.length + 1) * 2,
-      ).cast<Uint16>();
-      if (pathPtr.address == 0) {
-        _disposeGpu();
-        return;
+      Pointer<Uint16> toUtf16(String s) {
+        final units = s.codeUnits;
+        final ptr =
+            localAlloc(_lmemZeroInit, (units.length + 1) * 2).cast<Uint16>();
+        for (int i = 0; i < units.length; i++) {
+          ptr[i] = units[i];
+        }
+        return ptr;
       }
 
-      for (int i = 0; i < pathUnits.length; i++) {
-        pathPtr[i] = pathUnits[i];
-      }
-
-      final addStatus = pdhAddEnglishCounter(
+      // GPU Engine Utilization (% across 3D, Compute, Copy, etc.)
+      final pathUsage =
+          toUtf16('\\GPU Engine(pid_${pid}_*)\\Utilization Percentage');
+      final sUsage = pdhAddEnglishCounter(
         scratch.ref.hQuery,
-        pathPtr,
+        pathUsage,
         0,
-        hCounterPtr,
+        scratch.cast<IntPtr>() + 1,
       );
-      localFree(pathPtr.cast());
+      localFree(pathUsage.cast());
 
-      if (addStatus != 0) {
+      // Dedicated GPU Video Memory (VRAM in bytes)
+      final pathDedicated =
+          toUtf16('\\GPU Process Memory(pid_${pid}_*)\\Dedicated Usage');
+      final sDedicated = pdhAddEnglishCounter(
+        scratch.ref.hQuery,
+        pathDedicated,
+        0,
+        scratch.cast<IntPtr>() + 2,
+      );
+      localFree(pathDedicated.cast());
+
+      // Shared GPU Memory (in bytes)
+      final pathShared =
+          toUtf16('\\GPU Process Memory(pid_${pid}_*)\\Shared Usage');
+      final sShared = pdhAddEnglishCounter(
+        scratch.ref.hQuery,
+        pathShared,
+        0,
+        scratch.cast<IntPtr>() + 3,
+      );
+      localFree(pathShared.cast());
+
+      if (sUsage != 0 && sDedicated != 0 && sShared != 0) {
         _disposeGpu();
         return;
       }
@@ -290,13 +312,14 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
     }
   }
 
-  /// Pointer to the `memCounters` struct at offset 32 bytes (`buf + 4` Uint64s).
   Pointer<PROCESS_MEMORY_COUNTERS_EX2> get _memCountersPtr =>
-      (_buffer!.cast<Uint64>() + 4).cast<PROCESS_MEMORY_COUNTERS_EX2>();
+      Pointer<PROCESS_MEMORY_COUNTERS_EX2>.fromAddress(
+        _buffer!.address + sizeOf<Uint64>() * 4,
+      );
 
   int _getCurrentCpuTimeUs() {
     final buf = _buffer;
-    if (!_initialized || buf == null) return -1;
+    if (buf == null || buf.address == 0) return -1;
 
     final timesPtr = buf.cast<Uint64>();
     final result = _getProcessTimes!(
@@ -378,28 +401,10 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
     return _lastCpuUsage;
   }
 
-  double _getGpuUsage() {
-    if (!Platform.isWindows ||
-        !_gpuInitialized ||
-        _gpuScratchPtr == null ||
-        _gpuItemBuffer == null) {
-      return 0.0;
-    }
-
-    final currentTimeUs = _stopwatch.elapsedMicroseconds;
-    if (currentTimeUs - _lastGpuSampleTimeUs < _minSampleWindowUs) {
-      return _lastGpuUsage;
-    }
-    _lastGpuSampleTimeUs = currentTimeUs;
-
+  double _readCounterSum(int hCounter) {
+    if (hCounter == 0) return 0.0;
     final scratch = _gpuScratchPtr!;
-    final hQuery = scratch.ref.hQuery;
-    final hCounter = scratch.ref.hCounter;
-
-    if (_pdhCollectQueryData!(hQuery) != 0) return _lastGpuUsage;
-
-    // Offset of dwBufferSize is 2 IntPtrs (16 bytes on 64-bit) from the start of _PdhScratch
-    final sizePtr = (scratch.cast<IntPtr>() + 2).cast<Uint32>();
+    final sizePtr = (scratch.cast<IntPtr>() + 4).cast<Uint32>();
     final countPtr = sizePtr + 1;
 
     sizePtr.value = _gpuItemBufferBytes;
@@ -433,27 +438,54 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
       }
     }
 
-    if (status != 0) {
-      _lastGpuUsage = 0.0;
-      return 0.0;
-    }
+    if (status != 0) return 0.0;
 
     final itemCount = countPtr.value;
     final items = _gpuItemBuffer!;
-    double totalGpu = 0.0;
+    double sum = 0.0;
 
     for (int i = 0; i < itemCount; i++) {
       final item = (items + i).ref;
       if (item.cStatus == 0 || item.cStatus == 1) {
         final val = item.doubleValue;
         if (!val.isNaN && val > 0.0) {
-          totalGpu += val;
+          sum += val;
         }
       }
     }
 
-    _lastGpuUsage = totalGpu.clamp(0.0, 100.0);
-    return _lastGpuUsage;
+    return sum;
+  }
+
+  void _updateGpuCounters() {
+    if (!Platform.isWindows ||
+        !_gpuInitialized ||
+        _gpuScratchPtr == null ||
+        _gpuItemBuffer == null) {
+      return;
+    }
+
+    final currentTimeUs = _stopwatch.elapsedMicroseconds;
+    if (currentTimeUs - _lastGpuSampleTimeUs < _minSampleWindowUs) {
+      return;
+    }
+    _lastGpuSampleTimeUs = currentTimeUs;
+
+    final scratch = _gpuScratchPtr!;
+    final hQuery = scratch.ref.hQuery;
+    if (_pdhCollectQueryData!(hQuery) != 0) return;
+
+    if (scratch.ref.hCounterUsage != 0) {
+      _lastGpuUsage =
+          _readCounterSum(scratch.ref.hCounterUsage).clamp(0.0, 100.0);
+    }
+    if (scratch.ref.hCounterDedicated != 0) {
+      _lastGpuDedicatedBytes =
+          _readCounterSum(scratch.ref.hCounterDedicated).toInt();
+    }
+    if (scratch.ref.hCounterShared != 0) {
+      _lastGpuSharedBytes = _readCounterSum(scratch.ref.hCounterShared).toInt();
+    }
   }
 
   bool _reallocateGpuItemBuffer(int newSizeBytes) {
@@ -496,7 +528,22 @@ final class WinResourceMonitor extends AppResourceMonitorPlatform
   double get cpuUsagePercent => _getCpuUsage();
 
   @override
-  double get gpuUsagePercent => _getGpuUsage();
+  double get gpuUsagePercent {
+    _updateGpuCounters();
+    return _lastGpuUsage;
+  }
+
+  @override
+  int get gpuVramBytes {
+    _updateGpuCounters();
+    return _lastGpuDedicatedBytes;
+  }
+
+  @override
+  int get gpuSharedBytes {
+    _updateGpuCounters();
+    return _lastGpuSharedBytes;
+  }
 
   @override
   int get rssBytes {

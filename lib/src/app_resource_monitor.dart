@@ -1,10 +1,30 @@
+import 'dart:async';
+
 import 'app_resource_monitor_platform_interface.dart';
+import 'resource_snapshot.dart';
 
 /// Cross-platform interface for monitoring current process CPU, GPU, and memory usage.
 abstract interface class AppResourceMonitor {
   /// The shared platform instance for app-wide monitoring.
   static AppResourceMonitorPlatform get instance =>
       AppResourceMonitorPlatform.instance;
+
+  /// Captures a snapshot of all current resource metrics from the shared [instance].
+  static ResourceSnapshot snapshot() => instance.snapshot();
+
+  /// Returns a stream of [ResourceSnapshot]s emitted at the given [interval]
+  /// from the shared [instance].
+  ///
+  /// If [emitImmediately] is `true` (default), an initial snapshot is emitted
+  /// immediately upon subscription before starting periodic emissions.
+  static Stream<ResourceSnapshot> stream({
+    Duration interval = const Duration(seconds: 1),
+    bool emitImmediately = true,
+  }) =>
+      instance.stream(
+        interval: interval,
+        emitImmediately: emitImmediately,
+      );
 
   /// Creates a new platform-specific resource monitor instance for the current operating system.
   factory AppResourceMonitor() => AppResourceMonitorPlatform.createNew();
@@ -17,19 +37,25 @@ abstract interface class AppResourceMonitor {
 
   /// The percentage of total GPU capacity actively utilized by this process (0.0 to 100.0).
   ///
-  /// Aggregates execution time across all GPU hardware engines (such as 3D,
-  /// Compute, Copy/DMA, and Video Decode) associated with this process via
-  /// Windows Performance Data Helper (PDH). Matches Windows Task Manager's "GPU" column.
+  /// Aggregates execution time across all GPU hardware engines (such as 3D, Compute, Copy/DMA,
+  /// and Video Decode) associated with this process via Windows Performance Data Helper (PDH).
   double get gpuUsagePercent;
 
-  /// Resident Set Size / Working Set in bytes (includes shared OS libraries).
-  int get rssBytes;
+  /// Dedicated video memory (VRAM) used by this process.
+  int get gpuVramBytes;
 
-  /// Active private physical RAM in bytes owned exclusively by this process.
-  /// Matches Windows Task Manager's default "Memory" column.
+  /// Shared system RAM allocated for GPU resources used by this process in bytes.
+  int get gpuSharedBytes;
+
+  /// Private working set.
+  /// Active private physical RAM used exclusively by this process in bytes.
   int get privateBytes;
 
-  /// Committed virtual memory in bytes (Private commit charge).
+  /// Resident Set Size/Working Set.
+  /// Total physical RAM used by this process and the shared libraries that this process used in bytes.
+  int get rssBytes;
+
+  /// Virtual memory committed by the OS memory manager for this process in bytes.
   int get committedBytes;
 
   /// Total physical RAM installed on the machine in bytes.
@@ -44,31 +70,66 @@ abstract interface class AppResourceMonitor {
 
 /// Convenience [MemorySize] wrappers and percentage calculations on [AppResourceMonitor].
 extension AppResourceMonitorConversions on AppResourceMonitor {
-  /// Active private physical RAM owned exclusively by this process (Task Manager "Memory").
-  MemorySize get privateRam => MemorySize(privateBytes);
+  /// Dedicated video memory (VRAM) used by your app.
+  MemorySize get gpuVram => MemorySize(gpuVramBytes);
 
-  /// Alias for [privateRam].
+  /// Shared system RAM allocated for GPU resources used by your app
+  /// (e.g. on integrated GPUs or VRAM overflow).
+  MemorySize get gpuShared => MemorySize(gpuSharedBytes);
+
+  /// Active private physical RAM used exclusively by your app (Windows Task Manager "Memory").
   MemorySize get private => MemorySize(privateBytes);
 
-  /// Resident Set Size / Working Set (physical RAM including shared libraries).
+  /// Total physical RAM used by your app and the shared libraries that your app uses.
   MemorySize get rss => MemorySize(rssBytes);
 
-  /// Committed virtual memory (Private commit charge).
+  /// Virtual memory committed by the OS memory manager for this process.
   MemorySize get committed => MemorySize(committedBytes);
 
   /// Total physical RAM installed on the machine.
   MemorySize get totalSystemRam => MemorySize(totalSystemRamBytes);
 
-  /// Percentage of total system RAM used by this process's active private memory (0.0 to 100.0).
+  /// Percentage of total system RAM used by your app's active private memory (0.0 to 100.0).
   double get memoryUsagePercent {
     if (totalSystemRamBytes <= 0) return 0.0;
     return ((privateBytes / totalSystemRamBytes) * 100.0).clamp(0.0, 100.0);
   }
 
-  /// Percentage of total system RAM represented by this process's committed memory (0.0 to 100.0).
+  /// Percentage of total system RAM represented by your app's committed memory (0.0 to 100.0).
   double get committedMemoryUsagePercent {
     if (totalSystemRamBytes <= 0) return 0.0;
     return ((committedBytes / totalSystemRamBytes) * 100.0).clamp(0.0, 100.0);
+  }
+
+  /// Captures a snapshot of all current resource metrics.
+  ResourceSnapshot snapshot() => ResourceSnapshot(
+        timestamp: DateTime.now(),
+        cpuUsagePercent: cpuUsagePercent,
+        gpu: GpuSnapshot(
+          usagePercent: gpuUsagePercent,
+          vram: gpuVram,
+          shared: gpuShared,
+        ),
+        memory: MemorySnapshot(
+          private: private,
+          rss: rss,
+          committed: committed,
+          totalSystem: totalSystemRam,
+        ),
+      );
+
+  /// Returns a stream of [ResourceSnapshot]s emitted at the given [interval].
+  ///
+  /// If [emitImmediately] is `true` (default), the stream emits an initial snapshot
+  /// immediately upon subscription before starting periodic emissions.
+  Stream<ResourceSnapshot> stream({
+    Duration interval = const Duration(seconds: 1),
+    bool emitImmediately = true,
+  }) async* {
+    if (emitImmediately) {
+      yield snapshot();
+    }
+    yield* Stream.periodic(interval, (_) => snapshot());
   }
 }
 

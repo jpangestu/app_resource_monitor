@@ -5,5 +5,5 @@ export 'src/app_resource_monitor.dart'
     show AppResourceMonitor, AppResourceMonitorConversions, MemorySize;
 export 'src/app_resource_monitor_platform_interface.dart'
     show AppResourceMonitorPlatform;
-export 'src/resource_snapshot.dart'
-    show GpuSnapshot, MemorySnapshot, ResourceSnapshot;
+export 'src/resource_metrics.dart'
+    show GpuSnapshot, MemorySnapshot, ResourceMetrics;

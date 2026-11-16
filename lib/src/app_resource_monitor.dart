@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'app_resource_monitor_platform_interface.dart';
-import 'resource_snapshot.dart';
+import 'resource_metrics.dart';
 
 /// Cross-platform interface for monitoring current process CPU, GPU, and memory usage.
 abstract interface class AppResourceMonitor {
@@ -10,14 +10,14 @@ abstract interface class AppResourceMonitor {
       AppResourceMonitorPlatform.instance;
 
   /// Captures a snapshot of all current resource metrics from the shared [instance].
-  static ResourceSnapshot snapshot() => instance.snapshot();
+  static ResourceMetrics snapshot() => instance.snapshot();
 
-  /// Returns a stream of [ResourceSnapshot]s emitted at the given [interval]
+  /// Returns a stream of [ResourceMetrics]s emitted at the given [interval]
   /// from the shared [instance].
   ///
   /// If [emitImmediately] is `true` (default), an initial snapshot is emitted
   /// immediately upon subscription before starting periodic emissions.
-  static Stream<ResourceSnapshot> stream({
+  static Stream<ResourceMetrics> stream({
     Duration interval = const Duration(seconds: 1),
     bool emitImmediately = true,
   }) =>
@@ -102,7 +102,7 @@ extension AppResourceMonitorConversions on AppResourceMonitor {
   }
 
   /// Captures a snapshot of all current resource metrics.
-  ResourceSnapshot snapshot() => ResourceSnapshot(
+  ResourceMetrics snapshot() => ResourceMetrics(
         timestamp: DateTime.now(),
         cpuUsagePercent: cpuUsagePercent,
         gpu: GpuSnapshot(
@@ -118,11 +118,11 @@ extension AppResourceMonitorConversions on AppResourceMonitor {
         ),
       );
 
-  /// Returns a stream of [ResourceSnapshot]s emitted at the given [interval].
+  /// Returns a stream of [ResourceMetrics]s emitted at the given [interval].
   ///
   /// If [emitImmediately] is `true` (default), the stream emits an initial snapshot
   /// immediately upon subscription before starting periodic emissions.
-  Stream<ResourceSnapshot> stream({
+  Stream<ResourceMetrics> stream({
     Duration interval = const Duration(seconds: 1),
     bool emitImmediately = true,
   }) async* {

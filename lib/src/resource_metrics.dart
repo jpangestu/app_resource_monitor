@@ -1,7 +1,7 @@
 import 'app_resource_monitor.dart';
 
 /// An immutable snapshot of app resource usage.
-final class ResourceSnapshot {
+final class ResourceMetrics {
   /// The timestamp when this snapshot was captured.
   final DateTime timestamp;
 
@@ -14,7 +14,7 @@ final class ResourceSnapshot {
   /// RAM metrics (private, rss, committed).
   final MemorySnapshot memory;
 
-  const ResourceSnapshot({
+  const ResourceMetrics({
     required this.timestamp,
     required this.cpuUsagePercent,
     this.gpu,
@@ -24,7 +24,7 @@ final class ResourceSnapshot {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ResourceSnapshot &&
+      other is ResourceMetrics &&
           runtimeType == other.runtimeType &&
           timestamp == other.timestamp &&
           cpuUsagePercent == other.cpuUsagePercent &&

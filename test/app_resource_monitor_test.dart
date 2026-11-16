@@ -73,7 +73,7 @@ void main() {
         shared: MemorySize(1024 * 1024 * 32),
       );
 
-      final snapshot = ResourceSnapshot(
+      final snapshot = ResourceMetrics(
         timestamp: now,
         cpuUsagePercent: 25.5,
         gpu: gpu,
@@ -101,7 +101,7 @@ void main() {
       expect(memory.toString(), contains('private: 100.0 MB'));
 
       // Value equality
-      final sameSnapshot = ResourceSnapshot(
+      final sameSnapshot = ResourceMetrics(
         timestamp: now,
         cpuUsagePercent: 25.5,
         gpu: gpu,
@@ -112,7 +112,7 @@ void main() {
     });
 
     test('handles null GPU gracefully', () {
-      final snapshot = ResourceSnapshot(
+      final snapshot = ResourceMetrics(
         timestamp: DateTime.now(),
         cpuUsagePercent: 5.0,
         gpu: null,
